@@ -1,18 +1,42 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react';
 import Hls from 'hls.js';
 
 // ============================================================
 // HLS VIDEO PLAYER
 // Supports: HLS.js (Chrome, Firefox, Fire TV Silk), Native HLS (Safari, iOS, tvOS)
+// Features: Quality selector, PIP support, muted prop for multi-view
 // ============================================================
 
-export default function HLSPlayer({ url, poster, onStatusChange }) {
+const HLSPlayer = forwardRef(function HLSPlayer({ url, poster, onStatusChange, muted = false }, ref) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
-  const [status, setStatus] = useState('idle'); // idle | loading | playing | buffering | error
+  const [status, setStatus] = useState('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [quality, setQuality] = useState('');
   const [retryCount, setRetryCount] = useState(0);
+  const [levels, setLevels] = useState([]);
+  const [currentLevel, setCurrentLevel] = useState(-1);
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
+  const [isPIP, setIsPIP] = useState(false);
+
+  // Expose methods to parent via ref
+  useImperativeHandle(ref, () => ({
+    togglePIP: async () => {
+      const video = videoRef.current;
+      if (!video) return;
+      try {
+        if (document.pictureInPictureElement === video) {
+          await document.exitPictureInPicture();
+        } else if (document.pictureInPictureEnabled) {
+          await video.requestPictureInPicture();
+        }
+      } catch (err) {
+        console.warn('[PIP] Error:', err);
+      }
+    },
+    getVideoElement: () => videoRef.current,
+    isPIP: () => isPIP,
+  }), [isPIP]);
 
   const updateStatus = useCallback((s, msg = '') => {
     setStatus(s);
@@ -27,6 +51,15 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
     }
   }, []);
 
+  const selectQuality = useCallback((levelIndex) => {
+    const hls = hlsRef.current;
+    if (hls) {
+      hls.currentLevel = levelIndex;
+      setCurrentLevel(levelIndex);
+    }
+    setShowQualityMenu(false);
+  }, []);
+
   const initPlayer = useCallback(() => {
     const video = videoRef.current;
     if (!video || !url) {
@@ -37,6 +70,8 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
     destroyHls();
     updateStatus('loading');
     setRetryCount(0);
+    setLevels([]);
+    setCurrentLevel(-1);
 
     // ---- Native HLS support (Safari, iOS, Smart TVs, Fire TV) ----
     if (video.canPlayType('application/vnd.apple.mpegurl') || video.canPlayType('application/x-mpegURL')) {
@@ -55,7 +90,6 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
         maxMaxBufferLength: 60,
         startLevel: -1,
         capLevelToPlayerSize: true,
-        // Timeouts tuned for potentially slow streams
         fragLoadingTimeOut: 25000,
         fragLoadingMaxRetry: 8,
         fragLoadingRetryDelay: 1000,
@@ -72,9 +106,10 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
       });
 
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-        const levels = data.levels || [];
-        if (levels.length > 0) {
-          const best = levels[levels.length - 1];
+        const parsedLevels = data.levels || [];
+        setLevels(parsedLevels);
+        if (parsedLevels.length > 0) {
+          const best = parsedLevels[parsedLevels.length - 1];
           setQuality(`${best.height || '?'}p`);
         }
         video.play().catch(() => {});
@@ -83,6 +118,7 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
       hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
         const level = hls.levels[data.level];
         if (level) setQuality(`${level.height}p`);
+        setCurrentLevel(data.level);
       });
 
       hls.on(Hls.Events.ERROR, (_, data) => {
@@ -112,7 +148,6 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
 
       hls.attachMedia(video);
     } else {
-      // Fallback: try direct
       video.src = url;
       video.play().catch(() => {
         updateStatus('error', 'Tu navegador no soporta HLS. Usa Chrome, Firefox o Safari.');
@@ -135,17 +170,23 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
     const onPause = () => {
       if (status === 'playing') updateStatus('idle');
     };
+    const onEnterPIP = () => setIsPIP(true);
+    const onLeavePIP = () => setIsPIP(false);
 
     video.addEventListener('playing', onPlaying);
     video.addEventListener('waiting', onWaiting);
     video.addEventListener('error', onError);
     video.addEventListener('pause', onPause);
+    video.addEventListener('enterpictureinpicture', onEnterPIP);
+    video.addEventListener('leavepictureinpicture', onLeavePIP);
 
     return () => {
       video.removeEventListener('playing', onPlaying);
       video.removeEventListener('waiting', onWaiting);
       video.removeEventListener('error', onError);
       video.removeEventListener('pause', onPause);
+      video.removeEventListener('enterpictureinpicture', onEnterPIP);
+      video.removeEventListener('leavepictureinpicture', onLeavePIP);
     };
   }, [updateStatus, status]);
 
@@ -162,9 +203,31 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
     };
   }, [url]);
 
+  // Sync muted prop
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.muted = muted;
+  }, [muted]);
+
   const handleRetry = () => {
     setRetryCount(0);
     initPlayer();
+  };
+
+  // Close quality menu on outside click
+  useEffect(() => {
+    if (!showQualityMenu) return;
+    const close = () => setShowQualityMenu(false);
+    const timer = setTimeout(() => document.addEventListener('click', close), 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('click', close);
+    };
+  }, [showQualityMenu]);
+
+  const formatBitrate = (bps) => {
+    if (!bps) return '';
+    const mbps = bps / 1_000_000;
+    return mbps >= 1 ? `${mbps.toFixed(1)} Mbps` : `${(bps / 1000).toFixed(0)} kbps`;
   };
 
   return (
@@ -175,12 +238,44 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
         controls
         playsInline
         autoPlay
+        muted={muted}
         poster={poster}
       />
 
-      {/* Quality badge */}
+      {/* Quality selector */}
       {quality && status === 'playing' && (
-        <div style={styles.qualityBadge}>{quality}</div>
+        <div style={styles.qualityWrap}>
+          <button
+            style={styles.qualityBadge}
+            onClick={(e) => { e.stopPropagation(); setShowQualityMenu(s => !s); }}
+          >
+            {currentLevel === -1 ? `Auto (${quality})` : quality}
+          </button>
+          {showQualityMenu && levels.length > 0 && (
+            <div className="quality-menu" onClick={e => e.stopPropagation()}>
+              <button
+                className={`quality-option ${currentLevel === -1 ? 'active' : ''}`}
+                onClick={() => selectQuality(-1)}
+              >
+                <span className="qo-label">Auto</span>
+                <span className="qo-detail">Adaptativo</span>
+              </button>
+              {[...levels].sort((a, b) => (b.height || 0) - (a.height || 0)).map((lvl, i) => {
+                const realIndex = levels.indexOf(lvl);
+                return (
+                  <button
+                    key={i}
+                    className={`quality-option ${currentLevel === realIndex ? 'active' : ''}`}
+                    onClick={() => selectQuality(realIndex)}
+                  >
+                    <span className="qo-label">{lvl.height}p</span>
+                    <span className="qo-detail">{formatBitrate(lvl.bitrate)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Loading overlay */}
@@ -211,7 +306,9 @@ export default function HLSPlayer({ url, poster, onStatusChange }) {
       )}
     </div>
   );
-}
+});
+
+export default HLSPlayer;
 
 const styles = {
   container: {
@@ -226,10 +323,13 @@ const styles = {
     objectFit: 'contain',
     background: '#000',
   },
-  qualityBadge: {
+  qualityWrap: {
     position: 'absolute',
     top: 12,
     left: 12,
+    zIndex: 6,
+  },
+  qualityBadge: {
     fontSize: 10,
     fontWeight: 700,
     fontFamily: "'Space Mono', monospace",
@@ -239,7 +339,9 @@ const styles = {
     padding: '3px 8px',
     borderRadius: 4,
     letterSpacing: '0.5px',
-    zIndex: 6,
+    border: '1px solid rgba(255,255,255,0.15)',
+    cursor: 'pointer',
+    transition: 'background 0.15s',
   },
   overlay: {
     position: 'absolute',
