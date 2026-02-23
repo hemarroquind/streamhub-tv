@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import HLSPlayer from './HLSPlayer';
 import { CATEGORY_META } from './channels';
 
@@ -8,17 +8,66 @@ export default function PlayerView({ channel, related, favorites, onBack, onTogg
   const isFav = favorites.includes(channel.id);
   const internalRef = useRef(null);
   const playerRef = externalRef || internalRef;
-
-  const handlePIP = () => {
-    playerRef.current?.togglePIP();
-  };
+  const [showControls, setShowControls] = useState(false);
+  const hideTimer = useRef(null);
 
   const supportsPIP = typeof document !== 'undefined' && document.pictureInPictureEnabled;
 
+  const revealControls = useCallback(() => {
+    setShowControls(true);
+    clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => {
+      if (!sidebar) setShowControls(false);
+    }, 3500);
+  }, [sidebar]);
+
+  // Keep controls visible while sidebar is open
+  useEffect(() => {
+    if (sidebar) {
+      setShowControls(true);
+      clearTimeout(hideTimer.current);
+    }
+  }, [sidebar]);
+
+  // Cleanup timer
+  useEffect(() => () => clearTimeout(hideTimer.current), []);
+
+  // Show controls on any interaction
+  useEffect(() => {
+    const show = () => revealControls();
+    window.addEventListener('mousemove', show);
+    window.addEventListener('touchstart', show);
+    window.addEventListener('keydown', show);
+    return () => {
+      window.removeEventListener('mousemove', show);
+      window.removeEventListener('touchstart', show);
+      window.removeEventListener('keydown', show);
+    };
+  }, [revealControls]);
+
+  const handleClick = () => {
+    if (!showControls) {
+      revealControls();
+    }
+  };
+
   return (
-    <div className="player-root">
-      {/* Top bar */}
-      <div className="player-topbar">
+    <div className="player-root" onClick={handleClick}>
+      {/* Video — fills entire screen */}
+      <div className="player-video-area player-video-fullscreen">
+        {channel.streamUrl ? (
+          <HLSPlayer ref={playerRef} url={channel.streamUrl} poster={channel.logo} />
+        ) : (
+          <div className="no-stream">
+            <div style={{ fontSize: 52, marginBottom: 10 }}>📡</div>
+            <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 6 }}>{channel.name}</div>
+            <div style={{ fontSize: 13, opacity: 0.45 }}>Stream no disponible</div>
+          </div>
+        )}
+      </div>
+
+      {/* Top bar — auto-hide */}
+      <div className={`player-topbar ${showControls ? 'visible' : 'hidden'}`} onClick={e => e.stopPropagation()}>
         <button className="btn-ghost" onClick={onBack}>
           ← Volver
         </button>
@@ -40,7 +89,7 @@ export default function PlayerView({ channel, related, favorites, onBack, onTogg
           {isFav ? '★' : '☆'}
         </button>
         {supportsPIP && (
-          <button className="btn-ghost" onClick={handlePIP} title="Picture-in-Picture">
+          <button className="btn-ghost" onClick={() => playerRef.current?.togglePIP()} title="Picture-in-Picture">
             ⧉ PIP
           </button>
         )}
@@ -54,22 +103,9 @@ export default function PlayerView({ channel, related, favorites, onBack, onTogg
         </button>
       </div>
 
-      {/* Video */}
-      <div className="player-video-area">
-        {channel.streamUrl ? (
-          <HLSPlayer ref={playerRef} url={channel.streamUrl} poster={channel.logo} />
-        ) : (
-          <div className="no-stream">
-            <div style={{ fontSize: 52, marginBottom: 10 }}>📡</div>
-            <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 6 }}>{channel.name}</div>
-            <div style={{ fontSize: 13, opacity: 0.45 }}>Stream no disponible</div>
-          </div>
-        )}
-      </div>
-
       {/* Channel sidebar */}
       {sidebar && (
-        <div className="channel-sidebar">
+        <div className="channel-sidebar" onClick={e => e.stopPropagation()}>
           <div className="sidebar-header">
             <span>{mt.icon} {mt.label}</span>
             <button className="btn-close" onClick={onToggleSidebar}>✕</button>

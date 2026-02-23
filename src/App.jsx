@@ -144,11 +144,23 @@ export default function App({ onReady }) {
     if (focusCol > max) setFocusCol(Math.max(0, max));
   }, [focusRow, focusCol, getRowLen]);
 
-  // Scroll into view
+  // Scroll row into view (vertical)
   useEffect(() => {
     const el = rowRefs.current[focusRow];
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, [focusRow]);
+
+  // Scroll focused card into view (horizontal)
+  useEffect(() => {
+    const rowEl = rowRefs.current[focusRow];
+    if (!rowEl) return;
+    const scrollContainer = rowEl.querySelector('.h-scroll, .filters-row');
+    if (!scrollContainer) return;
+    const children = scrollContainer.children;
+    if (children[focusCol]) {
+      children[focusCol].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }, [focusRow, focusCol]);
 
   // ---- Play ----
   const playCh = useCallback((ch) => {
@@ -273,7 +285,7 @@ export default function App({ onReady }) {
         <div className="logo-wrap">
           <span className="logo-icon">◈</span>
           <span className="logo-text">StreamHub</span>
-          <span className="logo-badge">TV - MS Crew</span>
+          <span className="logo-badge">MS Crew</span>
         </div>
         <div className="search-wrap">
           <div className="search-box">
